@@ -159,7 +159,7 @@ class WifiMonitorService : Service() {
     }
 
     /**
-     * Webhook を送信する
+     * Webhook を送信する。失敗した場合は最大1分間リトライを行う。
      *
      * @param connected WiFi に接続されているかどうか
      * @param ssid 接続されている WiFi の SSID (接続時のみ)
@@ -185,26 +185,49 @@ class WifiMonitorService : Service() {
             """.trimIndent()
         }
 
-        // ネットワークが一時的に切断されている可能性があるため、
-        // 切断イベントの場合は少し待機するか、即座に送信を試みる。
-        // WiFi切断時はモバイルデータ通信が生きていれば送信可能。
         serviceScope.launch {
-            try {
-                val request = Request.Builder()
-                    .url(AppSettings.WEBHOOK_URL)
-                    .post(json.toRequestBody(jsonMediaType))
-                    .build()
+            val maxRetryTimeMs = 60_000L // 1分間
+            val startTime = System.currentTimeMillis()
+            var retryDelay = 2_000L // 初回リトライ待ち時間 (2秒)
+            var attempt = 1
 
-                client.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        Log.e(TAG, "Webhook 送信失敗 ($event): ${response.code}")
-                    } else {
-                        Log.d(TAG, "Webhook 送信成功 ($event)")
+            while (true) {
+                try {
+                    val request = Request.Builder()
+                        .url(AppSettings.WEBHOOK_URL)
+                        .post(json.toRequestBody(jsonMediaType))
+                        .build()
+
+                    client.newCall(request).execute().use { response ->
+                        if (response.isSuccessful) {
+                            Log.d(TAG, "Webhook 送信成功 ($event) - 試行回数: $attempt")
+                            return@launch
+                        } else {
+                            Log.e(TAG, "Webhook 送信失敗 ($event): ${response.code} - 試行回数: $attempt")
+                        }
                     }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Webhook 送信エラー ($event) - 試行回数: $attempt", e)
                 }
-                Log.d(TAG, "送信内容: $json")
-            } catch (e: Exception) {
-                Log.e(TAG, "Webhook 送信エラー ($event)", e)
+
+                // リトライ判定
+                val elapsed = System.currentTimeMillis() - startTime
+                if (elapsed >= maxRetryTimeMs) {
+                    Log.e(TAG, "Webhook 送信を諦めました ($event): 1分以上経過しました")
+                    break
+                }
+
+                // 次のリトライまでの待ち時間を計算（指数バックオフ）
+                // 次の待ち時間を加算しても1分を超えないように調整
+                val remainingTime = maxRetryTimeMs - elapsed
+                val actualDelay = minOf(retryDelay, remainingTime)
+                
+                Log.d(TAG, "Webhook リトライ待ち ($event): ${actualDelay}ms 後に再試行します")
+                delay(actualDelay)
+                
+                // 指数バックオフ（2倍ずつ増やす、最大10秒）
+                retryDelay = minOf(retryDelay * 2, 10_000L)
+                attempt++
             }
         }
     }
