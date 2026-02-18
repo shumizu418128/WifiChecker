@@ -17,11 +17,7 @@ class BootReceiver : BroadcastReceiver() {
             Log.d(TAG, "Device booted. Starting WifiMonitorService...")
             
             val serviceIntent = Intent(context, WifiMonitorService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(serviceIntent)
-            } else {
-                context.startService(serviceIntent)
-            }
+            context.startForegroundService(serviceIntent)
         }
     }
 }
