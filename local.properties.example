@@ -1,0 +1,4 @@
+## このファイルをコピーして local.properties を作成し、webhook.url に本番のURLを設定してください。
+
+# Webhook 送信先URL（必須）
+webhook.url=https://your-webhook-url-here.example.com
