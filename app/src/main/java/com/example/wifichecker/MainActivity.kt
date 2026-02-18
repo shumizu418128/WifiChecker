@@ -66,7 +66,7 @@ class MainActivity : ComponentActivity() {
 fun WifiMonitorScreen(modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    
+
     var hasPermissions by remember { mutableStateOf(checkPermissions(context)) }
     var isBackgroundGranted by remember { mutableStateOf(isBackgroundLocationPermissionGranted(context)) }
 
@@ -124,9 +124,56 @@ fun WifiMonitorScreen(modifier: Modifier = Modifier) {
             style = MaterialTheme.typography.headlineMedium
         )
         Spacer(modifier = Modifier.height(24.dp))
-        
-        // 「常に許可」がない場合の警告表示
-        if (hasPermissions && !isBackgroundGranted) {
+
+        // 「常に許可」や通知権限がない場合の警告表示
+        val isNotificationGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+        } else {
+            true
+        }
+
+        val allPermissionsGranted =
+            hasPermissions && isBackgroundGranted && isNotificationGranted
+
+        if (allPermissionsGranted) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color(0xFFE8F5E9))
+                    .padding(16.dp)
+            ) {
+                Column {
+                    Text(
+                        text = "✅ OK",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color(0xFF2E7D32),
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "WiFi 監視サービスが実行中です",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color(0xFF2E7D32)
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(24.dp))
+        } else {
+            val warningMessages = mutableListOf<String>()
+            if (!hasPermissions) {
+                warningMessages.add("位置情報・通知の権限を許可してください。")
+            }
+            if (hasPermissions && !isBackgroundGranted) {
+                warningMessages.add("位置情報の権限を「常に許可」に変更してください。")
+            }
+            if (!isNotificationGranted) {
+                warningMessages.add("通知の権限を許可してください。")
+            }
+
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -148,10 +195,20 @@ fun WifiMonitorScreen(modifier: Modifier = Modifier) {
                         fontWeight = FontWeight.Bold
                     )
                     Spacer(modifier = Modifier.height(4.dp))
+                    warningMessages.forEach {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color(0xFFC62828)
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
                     Text(
-                        text = "SSIDを取得するには、位置情報の権限を「常に許可」に変更してください。ここをタップして設定を開けます。",
+                        text = "タップして設定を開く",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = Color(0xFFC62828)
+                        color = Color(0xFFC62828),
+                        fontWeight = FontWeight.Medium
                     )
                 }
             }
@@ -172,12 +229,12 @@ private fun checkPermissions(context: Context): Boolean {
         context,
         Manifest.permission.ACCESS_FINE_LOCATION
     ) == PackageManager.PERMISSION_GRANTED
-    
+
     val coarseLocation = ContextCompat.checkSelfPermission(
         context,
         Manifest.permission.ACCESS_COARSE_LOCATION
     ) == PackageManager.PERMISSION_GRANTED
-    
+
     val notifications = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         ContextCompat.checkSelfPermission(
             context,
@@ -186,7 +243,7 @@ private fun checkPermissions(context: Context): Boolean {
     } else {
         true
     }
-    
+
     return fineLocation && coarseLocation && notifications
 }
 
