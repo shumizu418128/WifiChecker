@@ -1,25 +1,34 @@
 package com.example.wifichecker
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -27,9 +36,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.example.wifichecker.ui.theme.WifiCheckerTheme
 
 class MainActivity : ComponentActivity() {
@@ -49,18 +65,34 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun WifiMonitorScreen(modifier: Modifier = Modifier) {
     val context = LocalContext.current
-    var hasPermissions by remember {
-        mutableStateOf(
-            checkPermissions(context)
-        )
+    val lifecycleOwner = LocalLifecycleOwner.current
+    
+    var hasPermissions by remember { mutableStateOf(checkPermissions(context)) }
+    var isBackgroundGranted by remember { mutableStateOf(isBackgroundLocationPermissionGranted(context)) }
+
+    // 設定画面から戻ってきたときに権限を再チェックするためのオブザーバー
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                hasPermissions = checkPermissions(context)
+                isBackgroundGranted = isBackgroundLocationPermissionGranted(context)
+                if (hasPermissions) {
+                    startWifiService(context)
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
     }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        val allGranted = permissions.entries.all { it.value }
-        hasPermissions = allGranted
-        if (allGranted) {
+        hasPermissions = checkPermissions(context)
+        isBackgroundGranted = isBackgroundLocationPermissionGranted(context)
+        if (hasPermissions) {
             startWifiService(context)
         }
     }
@@ -81,7 +113,9 @@ fun WifiMonitorScreen(modifier: Modifier = Modifier) {
     }
 
     Column(
-        modifier = modifier.fillMaxSize(),
+        modifier = modifier
+            .fillMaxSize()
+            .padding(16.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
@@ -89,15 +123,51 @@ fun WifiMonitorScreen(modifier: Modifier = Modifier) {
             text = "WiFi Checker",
             style = MaterialTheme.typography.headlineMedium
         )
-        Spacer(modifier = Modifier.height(16.dp))
-        Text(
-            text = if (hasPermissions) "WiFi 監視サービスが実行中です" else "権限が必要です",
-            style = MaterialTheme.typography.bodyLarge
-        )
+        Spacer(modifier = Modifier.height(24.dp))
+        
+        // 「常に許可」がない場合の警告表示
+        if (hasPermissions && !isBackgroundGranted) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color(0xFFFFEBEE))
+                    .clickable {
+                        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                            data = Uri.fromParts("package", context.packageName, null)
+                        }
+                        context.startActivity(intent)
+                    }
+                    .padding(16.dp)
+            ) {
+                Column {
+                    Text(
+                        text = "⚠️ 設定が必要です",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color(0xFFC62828),
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "SSIDを取得するには、位置情報の権限を「常に許可」に変更してください。ここをタップして設定を開けます。",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color(0xFFC62828)
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(24.dp))
+        }
     }
 }
 
-private fun checkPermissions(context: android.content.Context): Boolean {
+private fun isBackgroundLocationPermissionGranted(context: Context): Boolean {
+    return ContextCompat.checkSelfPermission(
+        context,
+        Manifest.permission.ACCESS_BACKGROUND_LOCATION
+    ) == PackageManager.PERMISSION_GRANTED
+}
+
+private fun checkPermissions(context: Context): Boolean {
     val fineLocation = ContextCompat.checkSelfPermission(
         context,
         Manifest.permission.ACCESS_FINE_LOCATION

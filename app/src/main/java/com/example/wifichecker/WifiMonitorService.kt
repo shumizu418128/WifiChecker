@@ -74,7 +74,6 @@ class WifiMonitorService : Service() {
         val networkRequest = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-            .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
             .build()
         connectivityManager.registerNetworkCallback(networkRequest, networkCallback)
     }
@@ -97,23 +96,29 @@ class WifiMonitorService : Service() {
     private fun checkWifiStatus() {
         checkJob?.cancel()
         checkJob = serviceScope.launch {
-            // ネットワークが切り替わり、安定するまで待機（3秒）
-            delay(3000)
-            
             val activeNetwork = connectivityManager.activeNetwork
             val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork)
             val connected = capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
             
             var ssid: String? = null
             if (connected) {
-                // Android 10 (API 29) 以上では、WifiManager.connectionInfo.ssid は位置情報権限があっても
-                // <unknown ssid> を返すことがあるため、NetworkCapabilities から取得を試みる
+                // 1. NetworkCapabilities からの取得 (API 29+)
                 val transportInfo = capabilities?.transportInfo
                 if (transportInfo is WifiInfo) {
                     ssid = transportInfo.ssid?.replace("\"", "")
                 }
                 
-                // それでも取得できない場合は従来の WifiManager から試行
+                // 2. Android 12 (API 31) 以上での代替手段: activeNetwork から直接取得を試みる
+                if (ssid == null || ssid == "<unknown ssid>") {
+                    val currentNetwork = connectivityManager.activeNetwork
+                    val networkCapabilities = connectivityManager.getNetworkCapabilities(currentNetwork)
+                    val info = networkCapabilities?.transportInfo
+                    if (info is WifiInfo) {
+                        ssid = info.ssid?.replace("\"", "")
+                    }
+                }
+
+                // 3. 従来の WifiManager からの取得 (フォールバック)
                 if (ssid == null || ssid == "<unknown ssid>") {
                     val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
                     @Suppress("DEPRECATION")
@@ -132,8 +137,7 @@ class WifiMonitorService : Service() {
                 isWifiConnected = connected
                 currentSsid = ssid
                 
-                // 初回起動時（oldStatus == null）は通知のみで Webhook は送らない、
-                // または送る場合はここを調整。今回は確実な変化のみ送る。
+                // 初回起動時（oldStatus == null）は通知のみで Webhook は送らない
                 if (oldStatus != null) {
                     sendWebhook(connected, ssid)
                 }
@@ -185,6 +189,7 @@ class WifiMonitorService : Service() {
                         Log.d(TAG, "Webhook 送信成功 ($event)")
                     }
                 }
+                Log.d(TAG, "送信内容: $json")
             } catch (e: Exception) {
                 Log.e(TAG, "Webhook 送信エラー ($event)", e)
             }
@@ -192,17 +197,15 @@ class WifiMonitorService : Service() {
     }
 
     private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "WiFi 監視サービス",
-                NotificationManager.IMPORTANCE_MIN
-            ).apply {
-                description = "WiFi の接続状況を常時監視します"
-            }
-            val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(channel)
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            "WiFi 監視サービス",
+            NotificationManager.IMPORTANCE_MIN
+        ).apply {
+            description = "WiFi の接続状況を常時監視します"
         }
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(channel)
     }
 
     private fun createNotification(content: String): Notification {
