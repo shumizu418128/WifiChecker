@@ -44,6 +44,9 @@ class WifiMonitorService : Service() {
     private val client = OkHttpClient()
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
+    /** チャタリング対策: この時間（ミリ秒）以内の連続呼び出しは最後の1回だけ実行する */
+    private val checkDebounceMs = 800L
+
     private var isWifiConnected: Boolean? = null
     private var currentSsid: String? = null
     private var checkJob: Job? = null
@@ -90,57 +93,67 @@ class WifiMonitorService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     /**
-     * WiFi の接続状態を確認し、変化があれば Webhook を送信する
-     * ネットワークの切り替え待ちのため、少し遅延させてから確認を行う
+     * WiFi の接続状態を確認し、変化があれば Webhook を送信する。
+     * チャタリング対策のため [checkDebounceMs] ミリ秒遅延させてから実行し、
+     * その間に再度呼ばれた場合は前の実行をキャンセルして遅延をリセットする。
      */
     private fun checkWifiStatus() {
         checkJob?.cancel()
         checkJob = serviceScope.launch {
-            val activeNetwork = connectivityManager.activeNetwork
-            val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork)
-            val connected = capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
-            
-            var ssid: String? = null
-            if (connected) {
-                // 1. NetworkCapabilities からの取得 (API 29+)
-                val transportInfo = capabilities?.transportInfo
-                if (transportInfo is WifiInfo) {
-                    ssid = transportInfo.ssid?.replace("\"", "")
-                }
-                
-                // 2. Android 12 (API 31) 以上での代替手段: activeNetwork から直接取得を試みる
-                if (ssid == null || ssid == "<unknown ssid>") {
-                    val currentNetwork = connectivityManager.activeNetwork
-                    val networkCapabilities = connectivityManager.getNetworkCapabilities(currentNetwork)
-                    val info = networkCapabilities?.transportInfo
-                    if (info is WifiInfo) {
-                        ssid = info.ssid?.replace("\"", "")
-                    }
-                }
+            delay(checkDebounceMs)
+            performWifiStatusCheck()
+        }
+    }
 
-                // 3. 従来の WifiManager からの取得 (フォールバック)
-                if (ssid == null || ssid == "<unknown ssid>") {
-                    val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-                    @Suppress("DEPRECATION")
-                    val wifiInfo = wifiManager.connectionInfo
-                    ssid = wifiInfo.ssid?.replace("\"", "")
-                }
+    /**
+     * 実際の WiFi 状態取得と Webhook 送信判定を行う。
+     * [checkWifiStatus] のデバウンス後に呼ばれる。
+     */
+    private fun performWifiStatusCheck() {
+        val activeNetwork = connectivityManager.activeNetwork
+        val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork)
+        val connected = capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
 
-                // 最終的に取得できなかった場合のログ
-                if (ssid == "<unknown ssid>") {
-                    Log.w(TAG, "SSID could not be retrieved (still <unknown ssid>). Check location permissions.")
+        var ssid: String? = null
+        if (connected) {
+            // 1. NetworkCapabilities からの取得 (API 29+)
+            val transportInfo = capabilities?.transportInfo
+            if (transportInfo is WifiInfo) {
+                ssid = transportInfo.ssid?.replace("\"", "")
+            }
+
+            // 2. Android 12 (API 31) 以上での代替手段: activeNetwork から直接取得を試みる
+            if (ssid == null || ssid == "<unknown ssid>") {
+                val currentNetwork = connectivityManager.activeNetwork
+                val networkCapabilities = connectivityManager.getNetworkCapabilities(currentNetwork)
+                val info = networkCapabilities?.transportInfo
+                if (info is WifiInfo) {
+                    ssid = info.ssid?.replace("\"", "")
                 }
             }
 
-            if (isWifiConnected != connected || (connected && currentSsid != ssid)) {
-                val oldStatus = isWifiConnected
-                isWifiConnected = connected
-                currentSsid = ssid
-                
-                // 初回起動時（oldStatus == null）は通知のみで Webhook は送らない
-                if (oldStatus != null) {
-                    sendWebhook(connected, ssid)
-                }
+            // 3. 従来の WifiManager からの取得 (フォールバック)
+            if (ssid == null || ssid == "<unknown ssid>") {
+                val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+                @Suppress("DEPRECATION")
+                val wifiInfo = wifiManager.connectionInfo
+                ssid = wifiInfo.ssid?.replace("\"", "")
+            }
+
+            // 最終的に取得できなかった場合のログ
+            if (ssid == "<unknown ssid>") {
+                Log.w(TAG, "SSID could not be retrieved (still <unknown ssid>). Check location permissions.")
+            }
+        }
+
+        if (isWifiConnected != connected || (connected && currentSsid != ssid)) {
+            val oldStatus = isWifiConnected
+            isWifiConnected = connected
+            currentSsid = ssid
+
+            // 初回起動時（oldStatus == null）は通知のみで Webhook は送らない
+            if (oldStatus != null) {
+                sendWebhook(connected, ssid)
             }
         }
     }
