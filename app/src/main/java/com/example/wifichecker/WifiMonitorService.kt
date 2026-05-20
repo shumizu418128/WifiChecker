@@ -195,6 +195,7 @@ class WifiMonitorService : Service() {
                 try {
                     val request = Request.Builder()
                         .url(AppSettings.WEBHOOK_URL)
+                        .addHeader("X-API-Key", AppSettings.API_KEY)
                         .post(json.toRequestBody(jsonMediaType))
                         .build()
 

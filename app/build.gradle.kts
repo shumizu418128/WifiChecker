@@ -8,9 +8,8 @@ plugins {
 val localProperties = Properties().apply {
     rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
 }
-val webhookUrl: String = localProperties.getProperty("webhook.url", "").let { url ->
-    if (url.isBlank()) "" else url
-}
+val webhookUrl: String = localProperties.getProperty("webhook.url", "")
+val webhookApiKey: String = localProperties.getProperty("webhook.api_key", "")
 
 android {
     namespace = "com.example.wifichecker"
@@ -30,6 +29,7 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         buildConfigField("String", "WEBHOOK_URL", "\"$webhookUrl\"")
+        buildConfigField("String", "API_KEY", "\"$webhookApiKey\"")
     }
 
     buildTypes {
