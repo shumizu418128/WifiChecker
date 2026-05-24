@@ -82,6 +82,9 @@ class WifiMonitorService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent == null) {
+            Log.d(TAG, "Service restarted by system (intent is null). Resuming monitoring...")
+        }
         return START_STICKY
     }
 
@@ -145,6 +148,10 @@ class WifiMonitorService : Service() {
                 Log.w(TAG, "SSID could not be retrieved (still <unknown ssid>). Check location permissions.")
             }
         }
+
+        // 生存確認のために通知を更新 (システムへの生存アピール)
+        val currentTime = ZonedDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss"))
+        updateNotification("WiFi 監視中 (最終確認: $currentTime)")
 
         if (isWifiConnected != connected || (connected && currentSsid != ssid)) {
             val oldStatus = isWifiConnected

@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -41,7 +42,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
@@ -69,6 +69,7 @@ fun WifiMonitorScreen(modifier: Modifier = Modifier) {
 
     var hasPermissions by remember { mutableStateOf(checkPermissions(context)) }
     var isBackgroundGranted by remember { mutableStateOf(isBackgroundLocationPermissionGranted(context)) }
+    var isBatteryOptimized by remember { mutableStateOf(isBatteryOptimized(context)) }
 
     // 設定画面から戻ってきたときに権限を再チェックするためのオブザーバー
     DisposableEffect(lifecycleOwner) {
@@ -76,6 +77,7 @@ fun WifiMonitorScreen(modifier: Modifier = Modifier) {
             if (event == Lifecycle.Event.ON_RESUME) {
                 hasPermissions = checkPermissions(context)
                 isBackgroundGranted = isBackgroundLocationPermissionGranted(context)
+                isBatteryOptimized = isBatteryOptimized(context)
                 if (hasPermissions) {
                     startWifiService(context)
                 }
@@ -136,7 +138,7 @@ fun WifiMonitorScreen(modifier: Modifier = Modifier) {
         }
 
         val allPermissionsGranted =
-            hasPermissions && isBackgroundGranted && isNotificationGranted
+            hasPermissions && isBackgroundGranted && isNotificationGranted && !isBatteryOptimized
 
         if (allPermissionsGranted) {
             Box(
@@ -148,14 +150,14 @@ fun WifiMonitorScreen(modifier: Modifier = Modifier) {
             ) {
                 Column {
                     Text(
-                        text = "✅ OK",
+                        text = "✅ 監視中",
                         style = MaterialTheme.typography.titleMedium,
                         color = Color(0xFF2E7D32),
                         fontWeight = FontWeight.Bold
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "WiFi 監視サービスが実行中です",
+                        text = "サービスは正常に動作しています",
                         style = MaterialTheme.typography.bodyMedium,
                         color = Color(0xFF2E7D32)
                     )
@@ -173,6 +175,9 @@ fun WifiMonitorScreen(modifier: Modifier = Modifier) {
             if (!isNotificationGranted) {
                 warningMessages.add("通知の権限を許可してください。")
             }
+            if (isBatteryOptimized) {
+                warningMessages.add("バッテリーの最適化を「制限なし」に設定してください。")
+            }
 
             Box(
                 modifier = Modifier
@@ -180,10 +185,19 @@ fun WifiMonitorScreen(modifier: Modifier = Modifier) {
                     .clip(RoundedCornerShape(12.dp))
                     .background(Color(0xFFFFEBEE))
                     .clickable {
-                        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                            data = Uri.fromParts("package", context.packageName, null)
+                        if (isBatteryOptimized && hasPermissions && isBackgroundGranted && isNotificationGranted) {
+                            // バッテリー最適化の解除画面へ
+                            val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                                data = Uri.parse("package:${context.packageName}")
+                            }
+                            context.startActivity(intent)
+                        } else {
+                            // 一般設定画面へ
+                            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                data = Uri.fromParts("package", context.packageName, null)
+                            }
+                            context.startActivity(intent)
                         }
-                        context.startActivity(intent)
                     }
                     .padding(16.dp)
             ) {
@@ -247,7 +261,12 @@ private fun checkPermissions(context: Context): Boolean {
     return fineLocation && coarseLocation && notifications
 }
 
-private fun startWifiService(context: android.content.Context) {
+private fun isBatteryOptimized(context: Context): Boolean {
+    val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+    return !powerManager.isIgnoringBatteryOptimizations(context.packageName)
+}
+
+private fun startWifiService(context: Context) {
     val intent = Intent(context, WifiMonitorService::class.java)
     context.startForegroundService(intent)
 }
