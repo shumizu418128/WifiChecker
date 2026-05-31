@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -36,7 +37,8 @@ import java.time.format.DateTimeFormatter
 class WifiMonitorService : Service() {
 
     private val TAG = "WifiMonitorService"
-    private val CHANNEL_ID = "wifi_monitor_channel"
+    // IDを変更することで、重要度(IMPORTANCE_LOW)を確実に再適用させる
+    private val CHANNEL_ID = "wifi_monitor_channel_v3"
     private val NOTIFICATION_ID = 1
 
     private lateinit var connectivityManager: ConnectivityManager
@@ -44,35 +46,28 @@ class WifiMonitorService : Service() {
     private val client = OkHttpClient()
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
-    /** チャタリング対策: この時間（ミリ秒）以内の連続呼び出しは最後の1回だけ実行する */
     private val checkDebounceMs = 800L
-
     private var isWifiConnected: Boolean? = null
     private var currentSsid: String? = null
     private var checkJob: Job? = null
 
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(network: Network) {
-            Log.d(TAG, "Network onAvailable")
-            checkWifiStatus()
-        }
-
-        override fun onLost(network: Network) {
-            Log.d(TAG, "Network onLost")
-            checkWifiStatus()
-        }
-
-        override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
-            Log.d(TAG, "Network onCapabilitiesChanged: $networkCapabilities")
-            checkWifiStatus()
-        }
+        override fun onAvailable(network: Network) = checkWifiStatus()
+        override fun onLost(network: Network) = checkWifiStatus()
+        override fun onCapabilitiesChanged(network: Network, cap: NetworkCapabilities) = checkWifiStatus()
     }
 
     override fun onCreate() {
         super.onCreate()
         connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         createNotificationChannel()
-        startForeground(NOTIFICATION_ID, createNotification("WiFi 監視を開始しました"))
+        
+        // フォアグラウンドサービスとして開始
+        startForeground(
+            NOTIFICATION_ID, 
+            createNotification("WiFi 監視を開始しました"),
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+        )
         
         val networkRequest = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
@@ -82,10 +77,7 @@ class WifiMonitorService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent == null) {
-            Log.d(TAG, "Service restarted by system (intent is null). Resuming monitoring...")
-        }
-        return START_STICKY
+        return START_STICKY // システムに強制終了されても自動再起動を試みる
     }
 
     override fun onDestroy() {
@@ -95,11 +87,6 @@ class WifiMonitorService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    /**
-     * WiFi の接続状態を確認し、変化があれば Webhook を送信する。
-     * チャタリング対策のため [checkDebounceMs] ミリ秒遅延させてから実行し、
-     * その間に再度呼ばれた場合は前の実行をキャンセルして遅延をリセットする。
-     */
     private fun checkWifiStatus() {
         checkJob?.cancel()
         checkJob = serviceScope.launch {
@@ -108,10 +95,6 @@ class WifiMonitorService : Service() {
         }
     }
 
-    /**
-     * 実際の WiFi 状態取得と Webhook 送信判定を行う。
-     * [checkWifiStatus] のデバウンス後に呼ばれる。
-     */
     private fun performWifiStatusCheck() {
         val activeNetwork = connectivityManager.activeNetwork
         val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork)
@@ -119,37 +102,18 @@ class WifiMonitorService : Service() {
 
         var ssid: String? = null
         if (connected) {
-            // 1. NetworkCapabilities からの取得 (API 29+)
             val transportInfo = capabilities?.transportInfo
             if (transportInfo is WifiInfo) {
                 ssid = transportInfo.ssid?.replace("\"", "")
             }
-
-            // 2. Android 12 (API 31) 以上での代替手段: activeNetwork から直接取得を試みる
-            if (ssid == null || ssid == "<unknown ssid>") {
-                val currentNetwork = connectivityManager.activeNetwork
-                val networkCapabilities = connectivityManager.getNetworkCapabilities(currentNetwork)
-                val info = networkCapabilities?.transportInfo
-                if (info is WifiInfo) {
-                    ssid = info.ssid?.replace("\"", "")
-                }
-            }
-
-            // 3. 従来の WifiManager からの取得 (フォールバック)
             if (ssid == null || ssid == "<unknown ssid>") {
                 val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
                 @Suppress("DEPRECATION")
                 val wifiInfo = wifiManager.connectionInfo
                 ssid = wifiInfo.ssid?.replace("\"", "")
             }
-
-            // 最終的に取得できなかった場合のログ
-            if (ssid == "<unknown ssid>") {
-                Log.w(TAG, "SSID could not be retrieved (still <unknown ssid>). Check location permissions.")
-            }
         }
 
-        // 生存確認のために通知を更新 (システムへの生存アピール)
         val currentTime = ZonedDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss"))
         updateNotification("WiFi 監視中 (最終確認: $currentTime)")
 
@@ -157,85 +121,33 @@ class WifiMonitorService : Service() {
             val oldStatus = isWifiConnected
             isWifiConnected = connected
             currentSsid = ssid
-
-            // 初回起動時（oldStatus == null）は通知のみで Webhook は送らない
             if (oldStatus != null) {
                 sendWebhook(connected, ssid)
             }
         }
     }
 
-    /**
-     * Webhook を送信する。失敗した場合は最大1分間リトライを行う。
-     *
-     * @param connected WiFi に接続されているかどうか
-     * @param ssid 接続されている WiFi の SSID (接続時のみ)
-     */
     private fun sendWebhook(connected: Boolean, ssid: String?) {
         val event = if (connected) "wifi_connected" else "wifi_disconnected"
         val timestamp = ZonedDateTime.now().format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
-        
         val json = if (connected) {
-            """
-                {
-                    "event": "$event",
-                    "ssid": "$ssid",
-                    "timestamp": "$timestamp"
-                }
-            """.trimIndent()
+            """{"event": "$event", "ssid": "$ssid", "timestamp": "$timestamp"}"""
         } else {
-            """
-                {
-                    "event": "$event",
-                    "timestamp": "$timestamp"
-                }
-            """.trimIndent()
+            """{"event": "$event", "timestamp": "$timestamp"}"""
         }
 
         serviceScope.launch {
-            val maxRetryTimeMs = 60_000L // 1分間
-            val startTime = System.currentTimeMillis()
-            var retryDelay = 2_000L // 初回リトライ待ち時間 (2秒)
-            var attempt = 1
-
-            while (true) {
-                try {
-                    val request = Request.Builder()
-                        .url(AppSettings.WEBHOOK_URL)
-                        .addHeader("X-API-Key", AppSettings.API_KEY)
-                        .post(json.toRequestBody(jsonMediaType))
-                        .build()
-
-                    client.newCall(request).execute().use { response ->
-                        if (response.isSuccessful) {
-                            Log.d(TAG, "Webhook 送信成功 ($event) - 試行回数: $attempt")
-                            return@launch
-                        } else {
-                            Log.e(TAG, "Webhook 送信失敗 ($event): ${response.code} - 試行回数: $attempt")
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Webhook 送信エラー ($event) - 試行回数: $attempt", e)
+            try {
+                val request = Request.Builder()
+                    .url(AppSettings.WEBHOOK_URL)
+                    .addHeader("X-API-Key", AppSettings.API_KEY)
+                    .post(json.toRequestBody(jsonMediaType))
+                    .build()
+                client.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) Log.e(TAG, "Webhook failed: ${response.code}")
                 }
-
-                // リトライ判定
-                val elapsed = System.currentTimeMillis() - startTime
-                if (elapsed >= maxRetryTimeMs) {
-                    Log.e(TAG, "Webhook 送信を諦めました ($event): 1分以上経過しました")
-                    break
-                }
-
-                // 次のリトライまでの待ち時間を計算（指数バックオフ）
-                // 次の待ち時間を加算しても1分を超えないように調整
-                val remainingTime = maxRetryTimeMs - elapsed
-                val actualDelay = minOf(retryDelay, remainingTime)
-                
-                Log.d(TAG, "Webhook リトライ待ち ($event): ${actualDelay}ms 後に再試行します")
-                delay(actualDelay)
-                
-                // 指数バックオフ（2倍ずつ増やす、最大10秒）
-                retryDelay = minOf(retryDelay * 2, 10_000L)
-                attempt++
+            } catch (e: Exception) {
+                Log.e(TAG, "Webhook error", e)
             }
         }
     }
@@ -244,9 +156,10 @@ class WifiMonitorService : Service() {
         val channel = NotificationChannel(
             CHANNEL_ID,
             "WiFi 監視サービス",
-            NotificationManager.IMPORTANCE_MIN
+            NotificationManager.IMPORTANCE_LOW
         ).apply {
             description = "WiFi の接続状況を常時監視します"
+            setShowBadge(false)
         }
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(channel)
@@ -259,13 +172,21 @@ class WifiMonitorService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("WiFi Checker")
             .setContentText(content)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
-            .build()
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            builder.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE)
+        }
+
+        return builder.build()
     }
 
     private fun updateNotification(content: String) {
