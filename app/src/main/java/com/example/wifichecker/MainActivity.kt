@@ -46,12 +46,17 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
 import com.example.wifichecker.ui.theme.WifiCheckerTheme
+import java.util.concurrent.TimeUnit
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        setupWorkManager(this)
         setContent {
             WifiCheckerTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
@@ -269,4 +274,14 @@ private fun isBatteryOptimized(context: Context): Boolean {
 private fun startWifiService(context: Context) {
     val intent = Intent(context, WifiMonitorService::class.java)
     context.startForegroundService(intent)
+}
+
+private fun setupWorkManager(context: Context) {
+    val workRequest = PeriodicWorkRequestBuilder<MonitoringWorker>(15, TimeUnit.MINUTES)
+        .build()
+    WorkManager.getInstance(context).enqueueUniquePeriodicWork(
+        "WifiMonitoringPersistence",
+        ExistingPeriodicWorkPolicy.KEEP,
+        workRequest
+    )
 }

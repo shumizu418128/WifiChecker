@@ -1,5 +1,6 @@
 package com.example.wifichecker
 
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -16,6 +17,7 @@ import android.net.wifi.WifiInfo
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CoroutineScope
@@ -74,15 +76,47 @@ class WifiMonitorService : Service() {
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
             .build()
         connectivityManager.registerNetworkCallback(networkRequest, networkCallback)
+
+        scheduleRestartAlarm()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        scheduleRestartAlarm()
         return START_STICKY // システムに強制終了されても自動再起動を試みる
     }
 
     override fun onDestroy() {
         super.onDestroy()
         connectivityManager.unregisterNetworkCallback(networkCallback)
+        // サービスが明示的に停止される場合はアラームをキャンセルしたほうが良いが、
+        // 今回は常駐強化が目的なので、あえてキャンセルしない、または再スケジュールする
+        scheduleRestartAlarm()
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        // 最近のタスク一覧から消された時にもアラームをセット
+        scheduleRestartAlarm()
+    }
+
+    private fun scheduleRestartAlarm() {
+        val alarmManager = getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val intent = Intent(this, ServiceRestarter::class.java)
+        val pendingIntent = PendingIntent.getBroadcast(
+            this, 0, intent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        // 15分〜20分程度の幅を持たせてアラームをセット（Dozeモードを尊重しつつ、バッテリー消費を抑える）
+        val triggerAtMillis = SystemClock.elapsedRealtime() + 15 * 60 * 1000
+        val windowLengthMillis = 5 * 60 * 1000L // 5分の猶予
+        
+        alarmManager.setWindow(
+            AlarmManager.ELAPSED_REALTIME,
+            triggerAtMillis,
+            windowLengthMillis,
+            pendingIntent
+        )
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
